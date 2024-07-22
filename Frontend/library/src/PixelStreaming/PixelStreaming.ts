@@ -81,6 +81,22 @@ export class PixelStreaming {
 
     private _eventEmitter: EventEmitter;
 
+    protected _gl: WebGL2RenderingContext;
+    private _videoTexture: WebGLTexture = null;
+    
+    private _positionLocation: number;
+    private _texcoordLocation: number;
+
+    private _positionBuffer: WebGLBuffer;
+
+    
+    private _texcoordBuffer: WebGLBuffer;
+
+    private _prevVideoWidth: number = 0;
+    private _prevVideoHeight: number = 0;
+
+    private _canvas: HTMLCanvasElement = null;
+
     /**
      * @param config - A newly instantiated config object
      * @param overrides - Parameters to override default behaviour
@@ -138,7 +154,7 @@ export class PixelStreaming {
             this._videoElementParent.id = 'videoElementParent';
         }
         return this._videoElementParent;
-    }
+    }  
 
     /**
      * Configure the settings with on change listeners and any additional per experience settings.
@@ -502,12 +518,316 @@ export class PixelStreaming {
         this._eventEmitter.dispatchEvent(new WebRtcFailedEvent());
     }
 
+
+    _updateVideoTexture() {
+        const video = this._webRtcController.videoPlayer.getVideoElement(); 
+        const videoHeight = video.videoHeight;
+        const videoWidth = video.videoWidth;
+    
+        // Always create a new texture when the video dimensions change
+        if(this._prevVideoHeight != videoHeight || this._prevVideoWidth != videoWidth){
+            // Delete the old texture if it exists
+            if (this._videoTexture) {
+                this._gl.deleteTexture(this._videoTexture);
+                this._videoTexture = null;
+            }
+    
+            // Create a new texture
+            this._videoTexture = this._gl.createTexture();
+            this._gl.bindTexture(this._gl.TEXTURE_2D, this._videoTexture);
+    
+            // Set the parameters so we can render any size image.
+            this._gl.texParameteri(
+                this._gl.TEXTURE_2D,
+                this._gl.TEXTURE_WRAP_S,
+                this._gl.CLAMP_TO_EDGE
+            );
+            this._gl.texParameteri(
+                this._gl.TEXTURE_2D,
+                this._gl.TEXTURE_WRAP_T,
+                this._gl.CLAMP_TO_EDGE
+            );
+            this._gl.texParameteri(
+                this._gl.TEXTURE_2D,
+                this._gl.TEXTURE_MIN_FILTER,
+                this._gl.LINEAR
+            );
+            this._gl.texParameteri(
+                this._gl.TEXTURE_2D,
+                this._gl.TEXTURE_MAG_FILTER,
+                this._gl.LINEAR
+            );
+    
+            // Do full update of texture with new dimensions
+            this._gl.texImage2D(
+                this._gl.TEXTURE_2D,
+                0,
+                this._gl.RGBA,
+                videoWidth,
+                videoHeight,
+                0,
+                this._gl.RGBA,
+                this._gl.UNSIGNED_BYTE,
+                video
+            );
+    
+            // Update prev video width/height
+            this._prevVideoHeight = videoHeight;
+            this._prevVideoWidth = videoWidth;
+        } else {
+            // If dimensions match just update the sub region
+            this._gl.texSubImage2D(
+                this._gl.TEXTURE_2D,
+                0,
+                0,
+                0,
+                videoWidth,
+                videoHeight,
+                this._gl.RGBA,
+                this._gl.UNSIGNED_BYTE,
+                video
+            );
+        }
+    }
+    
+
+
+    _initGL() {
+        
+        const video = this._webRtcController.videoPlayer.getVideoElement();
+
+        this._canvas = document.createElement('canvas');
+        this._canvas.id = 'customCanvas';
+        this._canvas.style.width = '100%';
+        this._canvas.style.height = '100%';
+        this._canvas.style.position = 'absolute';
+        this._canvas.style.pointerEvents = 'all';
+
+        this._canvas.width = video.videoWidth;
+        this._canvas.height = video.videoHeight;
+
+        this._gl = this._canvas.getContext('webgl2');
+        this._gl.clearColor(0.0, 0.0, 0.0, 1);
+  
+        video.parentElement.appendChild(this._canvas);
+
+        // WebGL’s default behavior is to clear the alpha channel to 1.0 (fully opaque). 
+        // If you want to see through the parts of the canvas where you’ve discarded fragments,
+        this._gl.enable(this._gl.BLEND);
+        this._gl.blendFunc(this._gl.SRC_ALPHA, this._gl.ONE_MINUS_SRC_ALPHA);
+    }
+
     /**
      * Handle when the Video has been Initialized
      */
     _onVideoInitialized() {
         this._eventEmitter.dispatchEvent(new VideoInitializedEvent());
         this._videoStartTime = Date.now();
+
+        this._initGL();
+        this._initShaders();
+        this._initBuffers();
+
+        // Create our texture that we use in our shader
+        // and bind it once because we never use any other texture.
+        this._videoTexture = this._gl.createTexture();
+        this._gl.bindTexture(this._gl.TEXTURE_2D, this._videoTexture);
+
+        // Set the parameters so we can render any size image.
+        this._gl.texParameteri(
+            this._gl.TEXTURE_2D,
+            this._gl.TEXTURE_WRAP_S,
+            this._gl.CLAMP_TO_EDGE
+        );
+        this._gl.texParameteri(
+            this._gl.TEXTURE_2D,
+            this._gl.TEXTURE_WRAP_T,
+            this._gl.CLAMP_TO_EDGE
+        );
+        this._gl.texParameteri(
+            this._gl.TEXTURE_2D,
+            this._gl.TEXTURE_MIN_FILTER,
+            this._gl.LINEAR
+        );
+        this._gl.texParameteri(
+            this._gl.TEXTURE_2D,
+            this._gl.TEXTURE_MAG_FILTER,
+            this._gl.LINEAR
+        );
+
+        const video = this._webRtcController.videoPlayer.getVideoElement();
+        video.addEventListener('play', () => {
+            this._drawScene();
+        });
+    }
+    
+    _initShaders() {
+
+        // shader source code
+        const vertexShaderSource: string =
+        `
+        attribute vec2 a_position;
+        attribute vec2 a_texCoord;
+
+        // varyings
+        varying vec2 v_texCoord;
+
+        void main() {
+           gl_Position = vec4(a_position.x, a_position.y, 0, 1);
+           // pass the texCoord to the fragment shader
+           // The GPU will interpolate this value between points.
+           v_texCoord = a_texCoord;
+        }
+        `;
+
+        const fragmentShaderSource: string =
+        `
+        precision mediump float;
+
+        // our texture
+        uniform sampler2D u_image;
+
+        // the texCoords passed in from the vertex shader.
+        varying vec2 v_texCoord;
+
+        void main() {
+            // gl_FragColor = texture2D(u_image, v_texCoord);
+            vec4 color = texture2D(u_image, v_texCoord);
+            // checking if the green component of the color is significantly higher than the red and blue components
+            if (color.g > 0.6 && color.r < 0.4 && color.b < 0.4) {
+                discard;
+            } else {
+                gl_FragColor = color;
+            }
+
+        }
+        `;
+
+        // setup vertex shader
+        const vertexShader = this._gl.createShader(this._gl.VERTEX_SHADER);
+        this._gl.shaderSource(vertexShader, vertexShaderSource);
+        this._gl.compileShader(vertexShader);
+        if (!this._gl.getShaderParameter(vertexShader, this._gl.COMPILE_STATUS)) {
+            console.error('ERROR compiling vertex shader!', this._gl.getShaderInfoLog(vertexShader));
+            return;
+        }
+
+        // setup fragment shader
+        const fragmentShader = this._gl.createShader(this._gl.FRAGMENT_SHADER);
+        this._gl.shaderSource(fragmentShader, fragmentShaderSource);
+        this._gl.compileShader(fragmentShader);
+        if (!this._gl.getShaderParameter(fragmentShader, this._gl.COMPILE_STATUS)) {
+            console.error('ERROR compiling fragment shader!', this._gl.getShaderInfoLog(fragmentShader));
+            return;
+        }
+
+        // setup GLSL program
+        const shaderProgram = this._gl.createProgram();
+        this._gl.attachShader(shaderProgram, vertexShader);
+        this._gl.attachShader(shaderProgram, fragmentShader);
+        this._gl.linkProgram(shaderProgram);
+        if (!this._gl.getProgramParameter(shaderProgram, this._gl.LINK_STATUS)) {
+            console.error('ERROR linking program!', this._gl.getProgramInfoLog(shaderProgram));
+            return;
+        }
+
+        this._gl.useProgram(shaderProgram);
+
+        // look up where vertex data needs to go
+        this._positionLocation = this._gl.getAttribLocation(
+            shaderProgram,
+            'a_position'
+        );
+        this._texcoordLocation = this._gl.getAttribLocation(
+            shaderProgram,
+            'a_texCoord'
+        );
+    }
+
+
+    _initBuffers(){
+        // Create out position buffer and its vertex shader attribute
+        {
+            // Create a buffer to put the the vertices of the plane we will draw the video stream onto
+            this._positionBuffer = this._gl.createBuffer();
+            // Bind the position buffer
+            this._gl.bindBuffer(this._gl.ARRAY_BUFFER, this._positionBuffer);
+            // Enable `positionLocation` to be used as vertex shader attribute
+            this._gl.enableVertexAttribArray(this._positionLocation);
+
+            // Note: positions are passed in clip-space coordinates [-1..1] so no need to convert in-shader
+            // prettier-ignore
+            this._gl.bufferData(
+                this._gl.ARRAY_BUFFER,
+                new Float32Array([
+                    -1.0,  1.0,
+                     1.0,  1.0,
+                    -1.0, -1.0,
+                    -1.0, -1.0,
+                     1.0,  1.0,
+                     1.0, -1.0
+                ]),
+                this._gl.STATIC_DRAW
+            );
+
+            // Tell position attribute of the vertex shader how to get data out of the bound buffer (the positionBuffer)
+            this._gl.vertexAttribPointer(
+                this._positionLocation,
+                2 /*size*/,
+                this._gl.FLOAT /*type*/,
+                false /*normalize*/,
+                0 /*stride*/,
+                0 /*offset*/
+            );
+        }
+
+        // Create our texture coordinate buffers for accessing our texture
+        {
+            this._texcoordBuffer = this._gl.createBuffer();
+            // Bind the texture coordinate buffer
+            this._gl.bindBuffer(this._gl.ARRAY_BUFFER, this._texcoordBuffer);
+            // Enable `texcoordLocation` to be used as a vertex shader attribute
+            this._gl.enableVertexAttribArray(this._texcoordLocation);
+
+            // The texture coordinates to apply for rectangle we are drawing
+            this._gl.bufferData(
+                this._gl.ARRAY_BUFFER,
+                new Float32Array([
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    0.0, 1.0,
+                    0.0, 1.0,
+                    1.0, 0.0,
+                    1.0, 1.0
+                ]),
+                this._gl.STATIC_DRAW
+            );
+
+            // Tell texture coordinate attribute of the vertex shader how to get data out of the bound buffer (the texcoordBuffer)
+            this._gl.vertexAttribPointer(
+                this._texcoordLocation,
+                2 /*size*/,
+                this._gl.FLOAT /*type*/,
+                false /*normalize*/,
+                0 /*stride*/,
+                0 /*offset*/
+            );
+        }
+    }
+    
+    _drawScene() {
+
+        this._updateVideoTexture();
+
+        const video = this._webRtcController.videoPlayer.getVideoElement();           
+        
+        const videoHeight = video.videoHeight;
+        const videoWidth = video.videoWidth;
+        this._gl.viewport(0, 0, this._canvas.width, this._canvas.height);
+        this._gl.drawArrays(this._gl.TRIANGLES, 0, 6);
+
+        // Draw the rectangle we will show the video stream texture on
+        requestAnimationFrame(this._drawScene.bind(this));
     }
 
     /**

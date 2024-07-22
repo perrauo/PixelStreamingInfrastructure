@@ -36,6 +36,7 @@ export class VideoPlayer {
         this.videoElement.id = 'streamingVideo';
         this.videoElement.disablePictureInPicture = true;
         this.videoElement.playsInline = true;
+        this.videoElement.style.display = 'none';
         this.videoElement.style.width = '100%';
         this.videoElement.style.height = '100%';
         this.videoElement.style.position = 'absolute';
