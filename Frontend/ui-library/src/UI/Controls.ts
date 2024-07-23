@@ -5,6 +5,7 @@ import { SettingsIcon } from './SettingsIcon';
 import { StatsIcon } from './StatsIcon';
 import { XRIcon } from './XRIcon';
 import { WebXRController } from '@epicgames-ps/lib-pixelstreamingfrontend-ue5.5';
+import { CustomARController } from '@epicgames-ps/lib-pixelstreamingfrontend-ue5.5';
 import { UIElementConfig, UIElementCreationMode } from '../UI/UIConfigurationTypes'
 
 /**
@@ -71,7 +72,7 @@ export class Controls {
                 this._rootElement.appendChild(this.statsIcon.rootElement);
             }
             if (this.xrIcon) {
-                void WebXRController.isSessionSupported('immersive-vr').then(
+                void WebXRController.isSessionSupported('immersive-ar').then(
                 (supported: boolean) => {
                     if (supported) {
                         this._rootElement.appendChild(this.xrIcon.rootElement);

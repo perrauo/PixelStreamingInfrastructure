@@ -32,6 +32,7 @@ import {
     WebRtcTCPRelayDetectedEvent
 } from '../Util/EventEmitter';
 import { WebXRController } from '../WebXR/WebXRController';
+import { CustomARController } from '../CustomAR/CustomARController';
 import { MessageDirection } from '../UeInstanceMessage/StreamMessageController';
 import {
     DataChannelLatencyTestConfig,
@@ -62,6 +63,7 @@ export interface PixelStreamingOverrides {
 export class PixelStreaming {
     protected _webRtcController: WebRtcPlayerController;
     protected _webXrController: WebXRController;
+    protected _customArController: CustomARController;
     protected _dataChannelLatencyTestController: DataChannelLatencyTestController;
 
     /**
@@ -134,6 +136,7 @@ export class PixelStreaming {
             this.onScreenKeyboardHelper.showOnScreenKeyboard(command);
 
         this._webXrController = new WebXRController(this._webRtcController);
+        this._customArController = new CustomARController(this._webRtcController);
 
         this._setupWebRtcTCPRelayDetection = this._setupWebRtcTCPRelayDetection.bind(this)
 
@@ -605,8 +608,9 @@ export class PixelStreaming {
 
         this._canvas.width = video.videoWidth;
         this._canvas.height = video.videoHeight;
-
-        this._gl = this._canvas.getContext('webgl2');
+        this._gl = this._canvas.getContext('webgl2', {
+            xrCompatible: true
+        });
         this._gl.clearColor(0.0, 0.0, 0.0, 1);
   
         video.parentElement.appendChild(this._canvas);
@@ -614,6 +618,8 @@ export class PixelStreaming {
         // WebGL’s default behavior is to clear the alpha channel to 1.0 (fully opaque). 
         // If you want to see through the parts of the canvas where you’ve discarded fragments,
         this._gl.enable(this._gl.BLEND);
+        // If depth testing is enabled, the pixel stream might be occluded by the XRWebGLLayer even if it’s rendered afterwards
+        this._gl.disable(this._gl.DEPTH_TEST);
         this._gl.blendFunc(this._gl.SRC_ALPHA, this._gl.ONE_MINUS_SRC_ALPHA);
     }
 
@@ -654,11 +660,6 @@ export class PixelStreaming {
             this._gl.TEXTURE_MAG_FILTER,
             this._gl.LINEAR
         );
-
-        const video = this._webRtcController.videoPlayer.getVideoElement();
-        video.addEventListener('play', () => {
-            this._drawScene();
-        });
     }
     
     _initShaders() {
@@ -815,19 +816,28 @@ export class PixelStreaming {
         }
     }
     
-    _drawScene() {
+    _onFrame(time: DOMHighResTimeStamp, frame: XRFrame) {
 
+        Logger.Log(Logger.GetStackTrace(), 'PixelStream: _onFrame');
         this._updateVideoTexture();
 
         const video = this._webRtcController.videoPlayer.getVideoElement();           
         
-        const videoHeight = video.videoHeight;
-        const videoWidth = video.videoWidth;
-        this._gl.viewport(0, 0, this._canvas.width, this._canvas.height);
-        this._gl.drawArrays(this._gl.TRIANGLES, 0, 6);
+
+        // Bind the framebuffer to the base layer's framebuffer
+        const glLayer = this.customArController.xrSession.renderState.baseLayer;
+        this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, glLayer.framebuffer);
+
+        // const videoHeight = video.videoHeight;
+        // const videoWidth = video.videoWidth;
+        // this._gl.viewport(0, 0, this._canvas.width, this._canvas.height);
+        // this._gl.drawArrays(this._gl.TRIANGLES, 0, 6);
+
+        // Set the relevant portion of clip space
+        this._gl.viewport(0, 0, glLayer.framebufferWidth, glLayer.framebufferHeight);
 
         // Draw the rectangle we will show the video stream texture on
-        requestAnimationFrame(this._drawScene.bind(this));
+        this._gl.drawArrays(this._gl.TRIANGLES /*primitiveType*/, 0 /*offset*/, 6 /*count*/);
     }
 
     /**
@@ -1142,7 +1152,9 @@ export class PixelStreaming {
      * Enable/disable XR mode.
      */
     public toggleXR() {
-        this.webXrController.xrClicked();
+        // XR session need to be started from a user interaction for security reason otherwise features won't work
+        this.customArController.onFrame.addEventListener('xrFrame', this._onFrame.bind(this))
+        this.customArController.startSession(this._gl);
     }
 
     /**
@@ -1160,6 +1172,13 @@ export class PixelStreaming {
      */
     public get signallingProtocol() {
         return this._webRtcController.protocol;
+    }
+
+    /**
+     * Public getter for the arController controller. Used for all XR features.
+     */
+    public get customArController() {
+        return this._customArController;
     }
 
     /**

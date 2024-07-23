@@ -2,6 +2,7 @@
 
 export { WebRtcPlayerController } from './WebRtcPlayer/WebRtcPlayerController';
 export { WebXRController } from './WebXR/WebXRController';
+export { CustomARController } from './CustomAR/CustomARController';
 export {
     Config,
     ControlSchemeType,

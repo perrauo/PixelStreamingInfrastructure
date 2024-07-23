@@ -28,7 +28,7 @@ export class InitialSettings {
  * A class for handling Pixel Streaming details
  */
 export class PixelStreamingSettings {
-    AllowPixelStreamingCommands?: boolean;
+    AllowPixelStreamingCommands?: boolean = true;
     DisableLatencyTest?: boolean;
 }
 

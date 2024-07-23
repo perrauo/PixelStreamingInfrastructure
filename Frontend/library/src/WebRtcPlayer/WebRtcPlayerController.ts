@@ -737,6 +737,15 @@ export class WebRtcPlayerController {
         );
         this.streamMessageController.registerMessageHandler(
             MessageDirection.ToStreamer,
+            'CustomArTransform',
+            (data: Array<number | string>) =>
+                this.sendMessageController.sendMessageToStreamer(
+                    'CustomArTransform',
+                    data
+                )
+        );
+        this.streamMessageController.registerMessageHandler(
+            MessageDirection.ToStreamer,
             'XRControllerTransform',
             (data: Array<number | string>) =>
                 this.sendMessageController.sendMessageToStreamer(
